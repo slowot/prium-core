@@ -19,7 +19,7 @@ jobs:
   build-1:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -45,7 +45,7 @@ jobs:
     if: needs.build-1.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -70,7 +70,7 @@ jobs:
     if: needs.build-2.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -95,7 +95,7 @@ jobs:
     if: needs.build-3.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -120,7 +120,7 @@ jobs:
     if: needs.build-4.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -145,7 +145,7 @@ jobs:
     if: needs.build-5.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -170,7 +170,7 @@ jobs:
     if: needs.build-6.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -195,7 +195,7 @@ jobs:
     if: needs.build-7.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -220,7 +220,7 @@ jobs:
     if: needs.build-8.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -245,7 +245,7 @@ jobs:
     if: needs.build-9.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -270,7 +270,7 @@ jobs:
     if: needs.build-10.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -295,7 +295,7 @@ jobs:
     if: needs.build-11.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -320,7 +320,7 @@ jobs:
     if: needs.build-12.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -345,7 +345,7 @@ jobs:
     if: needs.build-13.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -370,7 +370,7 @@ jobs:
     if: needs.build-14.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:
@@ -395,7 +395,7 @@ jobs:
     if: needs.build-15.outputs.finished == 'false'
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare
         uses: ./.github/actions/prepare
         with:

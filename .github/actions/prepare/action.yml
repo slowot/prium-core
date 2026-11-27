@@ -25,12 +25,12 @@ runs:
         Get-PSDrive C | Select-Object Used, Free
 
     - name: Set up Python ${{ inputs.python-version }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@v7
       with:
         python-version: ${{ inputs.python-version }}
 
     - name: Set up Node.js 22 LTS fallback
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v7
       with:
         node-version: '22'
 

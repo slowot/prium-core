@@ -29,6 +29,12 @@ FORBIDDEN_PATTERNS = (
     'FingerprintingCanvasImageDataNoiseEnabled',
     'FingerprintingClientRectsNoiseEnabled',
     'kSpoofWebGLInfo',
+    'actions/checkout@v4',
+    'actions/setup-node@v4',
+    'actions/setup-python@v4',
+    'actions/setup-python@v5',
+    'actions/setup-python@v6',
+    'actions/upload-artifact@v4',
 )
 
 
