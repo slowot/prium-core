@@ -54,6 +54,22 @@ index df8f945..ca05591 100644
    const base::CommandLine& command_line =
        *base::CommandLine::ForCurrentProcess();
  
+@@ -1139,6 +1144,15 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
+ #endif  // BUILDFLAG(IS_POSIX)
+ 
+ #if BUILDFLAG(IS_WIN)
++  if (is_browser && (command_line.HasSwitch("version") ||
++                     command_line.HasSwitch("product-version"))) {
++    UNSAFE_TODO(printf(
++        "%s %s (%s)\n", version_info::GetProductName().data(),
++        version_info::GetVersionNumber().data(),
++        ant_chromium::kAntKernelVersionMarker));
++    fflush(stdout);
++    return 0;
++  }
+   // Must do this before any other usage of command line!
+   if (HasDeprecatedArguments(command_line.GetCommandLineString())) {
+     return 1;
 diff --git a/components/version_info/version_info.h b/components/version_info/version_info.h
 index 53ef508..3fcf818 100644
 --- a/components/version_info/version_info.h

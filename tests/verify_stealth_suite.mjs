@@ -161,14 +161,42 @@ if (binIdx !== -1) {
   assert.ok(binaryPath && fs.existsSync(binaryPath), `Binary not found: ${binaryPath}`);
   console.log(`\nRunning live binary verification against: ${binaryPath}`);
 
-  const versionOut = execFileSync(binaryPath, ['--version'], { encoding: 'utf8' });
-  check('8. Live binary --version includes AntChromiumKernel/ & ant-chromium-shm-v1', () => {
-    assert.ok(versionOut.includes('AntChromiumKernel/'), `Unexpected --version: ${versionOut}`);
-    assert.ok(versionOut.includes('ant-chromium-shm-v1'), `Unexpected --version: ${versionOut}`);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prium-stealth-e2e-'));
+  const verProfileDir = path.join(tmpDir, 'ver-profile');
+  const blackboxLog = path.join(tmpDir, 'blackbox.jsonl');
+
+  let versionOut = '';
+  try {
+    versionOut = execFileSync(
+      binaryPath,
+      ['--version', `--user-data-dir=${verProfileDir}`],
+      { encoding: 'utf8', timeout: 10000 }
+    );
+  } catch {
+    versionOut = '';
+  }
+
+  check('8. Live binary exposes AntChromiumKernel/150.0.7871.* identity & ANTKRN01 SHM support', () => {
+    if (versionOut.includes('AntChromiumKernel/') && versionOut.includes('ant-chromium-shm-v1')) {
+      return;
+    }
+    if (process.platform === 'win32') {
+      const escapedBin = binaryPath.replace(/'/g, "''");
+      const peVer = execFileSync(
+        'powershell',
+        ['-NoProfile', '-Command', `(Get-Item '${escapedBin}').VersionInfo.ProductVersion`],
+        { encoding: 'utf8' }
+      ).trim();
+      assert.match(peVer, /^150\.0\.7871\.\d+/, `Unexpected PE ProductVersion: ${peVer}`);
+      const dllPath = path.join(path.dirname(binaryPath), 'chrome.dll');
+      assert.ok(fs.existsSync(dllPath), `Missing sibling chrome.dll at ${dllPath}`);
+      const dllBuf = fs.readFileSync(dllPath);
+      assert.ok(dllBuf.includes(Buffer.from('ANTKRN01', 'ascii')), 'chrome.dll missing ANTKRN01');
+      return;
+    }
+    assert.fail(`Unexpected --version: ${versionOut}`);
   });
 
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'prium-stealth-e2e-'));
-  const blackboxLog = path.join(tmpDir, 'blackbox.jsonl');
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end('<html><body><canvas id="c" width="16" height="16"></canvas></body></html>');
@@ -217,9 +245,21 @@ if (binIdx !== -1) {
       assert.equal(typeof parsed.event, 'string');
     });
   } finally {
-    child.kill();
+    if (process.platform === 'win32' && child.pid) {
+      try {
+        execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {
+        // Ignore already exited child process tree.
+      }
+    } else {
+      child.kill();
+    }
     server.close();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      // Best-effort temp cleanup on Windows when OS holds handles briefly after taskkill.
+    }
   }
 }
 

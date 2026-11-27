@@ -16,21 +16,26 @@ function normalizeR2Endpoint(raw) {
     if (!trimmed) {
         return '';
     }
-    if (/^https?:\/\//i.test(trimmed)) {
-        return trimmed;
+    const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+        const u = new URL(withScheme);
+        return `${u.protocol}//${u.host}`;
+    } catch {
+        return withScheme;
     }
-    return `https://${trimmed}`;
 }
 
 async function setupSccacheEnv() {
     const endpoint = normalizeR2Endpoint(process.env.R2_ENDPOINT);
-    const accessKey = (process.env.AWS_ACCESS_KEY_ID || '').trim();
-    const secretKey = (process.env.AWS_SECRET_ACCESS_KEY || '').trim();
+    const accessKey = (process.env.R2_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID || '').trim();
+    const secretKey = (process.env.R2_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY || '').trim();
     if (!endpoint || !accessKey || !secretKey) {
         console.log('R2 credentials/endpoint not configured; skipping sccache R2 server startup.');
         return false;
     }
 
+    process.env.AWS_ACCESS_KEY_ID = accessKey;
+    process.env.AWS_SECRET_ACCESS_KEY = secretKey;
     process.env.SCCACHE_BUCKET = 'prium-sccache';
     process.env.SCCACHE_REGION = 'auto';
     process.env.SCCACHE_S3_KEY_PREFIX = 'prium/win64/';
@@ -38,9 +43,14 @@ async function setupSccacheEnv() {
     process.env.SCCACHE_S3_USE_SSL = endpoint.startsWith('https://') ? 'true' : 'false';
     process.env.SCCACHE_CACHE_COMPRESSION = 'zstd';
 
-    await exec.exec('sccache', ['--start-server'], { ignoreReturnCode: true });
+    const startCode = await exec.exec('sccache', ['--start-server'], { ignoreReturnCode: true });
     console.log('--- sccache stats (before build) ---');
-    await exec.exec('sccache', ['--show-stats'], { ignoreReturnCode: true });
+    const statsCode = await exec.exec('sccache', ['--show-stats'], { ignoreReturnCode: true });
+    if (startCode !== 0 || statsCode !== 0) {
+        console.warn(`sccache R2 health check failed (start=${startCode}, stats=${statsCode}); falling back to local compilation.`);
+        delete process.env.SCCACHE_BUCKET;
+        return false;
+    }
     return true;
 }
 
@@ -106,7 +116,7 @@ async function run() {
     const sccacheEnabled = await setupSccacheEnv();
 
     if (!fs.existsSync(path.join(SRC_DIR, 'BUILD.gn'))) {
-        const syncCode = await exec.exec('python', ['scripts/sync_chromium.py', '--track', track], {
+        const syncCode = await exec.exec('python', ['scripts/sync_chromium.py', '--track', track, '--cleanup-cache'], {
             cwd: WORKDIR,
             ignoreReturnCode: true,
         });

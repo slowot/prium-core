@@ -102,10 +102,36 @@ def _move_stripped_tree(src_root: Path, dst_root: Path, strip_leading_dirs: str 
     dst_root.mkdir(parents=True, exist_ok=True)
     for item in effective_src.iterdir():
         target = dst_root / item.name
-        if item.is_dir():
+        if not target.exists():
+            shutil.move(str(item), str(target))
+        elif item.is_dir():
             shutil.copytree(item, target, dirs_exist_ok=True)
         else:
             shutil.copy2(item, target)
+
+
+def _extract_tar_with_7z_pipe(sevenz: str, archive_path: Path, staging_dir: Path) -> None:
+    """Fast two-stage 7z pipe preserving symlinks safely on Windows."""
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    cmd1 = [sevenz, 'x', str(archive_path), '-so']
+    cmd2 = [sevenz, 'x', '-si', '-snld', '-aoa', '-ttar', f'-o{staging_dir}']
+    proc1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc2 = subprocess.Popen(cmd2, stdin=proc1.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except BaseException:
+        proc1.kill()
+        proc1.wait()
+        raise
+    assert proc1.stdout is not None
+    proc1.stdout.close()
+    _, err2 = proc2.communicate()
+    _, err1 = proc1.communicate()
+    if proc1.returncode != 0 or proc2.returncode != 0:
+        raise RuntimeError(
+            f'7z tar pipe failed for {archive_path.name}: '
+            f'stage1={proc1.returncode} ({err1.decode(errors="ignore")}), '
+            f'stage2={proc2.returncode} ({err2.decode(errors="ignore")})'
+        )
 
 
 def _extract_archive(
@@ -138,12 +164,16 @@ def _extract_archive(
                 zf.extractall(staging_dir)
             _move_stripped_tree(staging_dir, output_dir, strip_leading_dirs)
         elif name_lower.endswith(('.tar.xz', '.tar.gz', '.tgz', '.tar.bz2')):
-            staging_dir.mkdir(parents=True, exist_ok=True)
-            with tarfile.open(archive_path, 'r:*') as tf:
-                try:
-                    tf.extractall(staging_dir, filter='data')
-                except TypeError:
-                    tf.extractall(staging_dir)
+            if os.name == 'nt':
+                sevenz = _find_7z(sevenz_path)
+                _extract_tar_with_7z_pipe(sevenz, archive_path, staging_dir)
+            else:
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                with tarfile.open(archive_path, 'r:*') as tf:
+                    try:
+                        tf.extractall(staging_dir, filter='data')
+                    except TypeError:
+                        tf.extractall(staging_dir)
             _move_stripped_tree(staging_dir, output_dir, strip_leading_dirs)
         else:
             raise RuntimeError(f'Unsupported archive format: {archive_path.name}')
@@ -349,6 +379,7 @@ def main() -> int:
     parser.add_argument('--disable-ssl-verification', action='store_true')
     parser.add_argument('--skip-patches', action='store_true')
     parser.add_argument('--skip-overlay', action='store_true')
+    parser.add_argument('--cleanup-cache', action='store_true')
     args = parser.parse_args()
 
     lock = json.loads(LOCK_PATH.read_text(encoding='utf-8'))
@@ -381,6 +412,9 @@ def main() -> int:
         _apply_overlay(source_dir)
     if not args.skip_patches:
         _apply_patches(source_dir)
+    if args.cleanup_cache and cache_dir.exists():
+        LOG.info('Cleaning up download cache %s to free runner disk space...', cache_dir)
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
     LOG.info('Chromium %s sync complete (%s track).', lock['version'], args.track)
     return 0
