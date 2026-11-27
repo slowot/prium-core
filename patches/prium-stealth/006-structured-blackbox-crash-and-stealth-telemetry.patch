@@ -1,0 +1,42 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 006/012] Structured JSONL blackbox crash & stealth telemetry
+
+Adds base/ant_chromium/ant_blackbox_logger.{h,cc} inside //base emitting
+redacted JSONL telemetry records to ANT_CHROMIUM_BLACKBOX_LOG when set, and
+safely no-oping without allocation or I/O when unset.
+
+diff --git a/base/BUILD.gn b/base/BUILD.gn
+index 173afea..747a0f5 100644
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -229,6 +229,8 @@ source_set("asan_raw_ptr_service") {
+ # directory) which should use source_set as is recommended for GN targets).
+ component("base") {
+   sources = [
++    "ant_chromium/ant_blackbox_logger.cc",
++    "ant_chromium/ant_blackbox_logger.h",
+     "ant_chromium/ant_shm_config.cc",
+     "ant_chromium/ant_shm_config.h",
+     "allocator/allocator_check.cc",
+diff --git a/chrome/app/chrome_main_delegate.cc b/chrome/app/chrome_main_delegate.cc
+index ca05591..72abbcb 100644
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <variant>
+ 
++#include "base/ant_chromium/ant_blackbox_logger.h"
+ #include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base_paths.h"
+ #include "base/check.h"
+@@ -1063,6 +1064,9 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
+ 
+   // Eagerly hydrate ANTKRN01 shared memory configuration before renderer fork.
+   (void)ant_chromium::AntShmConfig::Get();
++  ant_chromium::AntBlackboxLogger::Get().EmitEvent(
++      "kernel_startup",
++      ant_chromium::AntShmConfig::Get().is_loaded() ? "shm_loaded" : "shm_absent");
+ 
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();

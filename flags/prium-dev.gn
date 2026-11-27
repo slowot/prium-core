@@ -1,0 +1,7 @@
+# Prium-Core Fast Development Track GN Overrides
+chrome_pgo_phase = 0
+use_thin_lto = false
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+exclude_unwind_tables = true

@@ -1,0 +1,7 @@
+# Prium-Core Production Release Track GN Overrides
+chrome_pgo_phase = 2
+use_thin_lto = true
+symbol_level = 1
+blink_symbol_level = 1
+v8_symbol_level = 1
+exclude_unwind_tables = false

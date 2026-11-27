@@ -1,0 +1,115 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 004/012] AudioBuffer & DOMRect deterministic finite precision hardening
+
+Applies bounded, deterministic, std::isfinite-clamped perturbation to
+AudioBuffer::copyFromChannel readback and Element DOMRect/ClientRects geometry.
+
+diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
+index 19def24..7360af0 100644
+--- a/third_party/blink/renderer/core/dom/element.cc
++++ b/third_party/blink/renderer/core/dom/element.cc
+@@ -27,11 +27,13 @@
+ #include "third_party/blink/renderer/core/dom/element.h"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <bitset>
+ #include <limits>
+ #include <memory>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/containers/adapters.h"
+ #include "base/feature_list.h"
+ #include "cc/input/snap_selection_strategy.h"
+@@ -3460,9 +3462,21 @@ Vector<gfx::RectF> Element::GetClientRectsNoAdjustment() {
+   if (quads.empty()) {
+     return {};
+   }
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
+   Vector<gfx::RectF> result;
+   for (auto& quad : quads) {
+-    result.emplace_back(quad.BoundingBox());
++    gfx::RectF box = quad.BoundingBox();
++    if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_DOMRECT_NOISE)) {
++      const uint32_t s32 =
++          static_cast<uint32_t>(ant_cfg.seed() ^ (ant_cfg.seed() >> 32));
++      const float dx =
++          ((s32 & 1u) ? 1.0f : -1.0f) *
++          (static_cast<float>((s32 >> 1u) & 0x3Fu) / 63.0f) * 1e-4f;
++      if (std::isfinite(box.x() + dx) && std::isfinite(box.y() + dx)) {
++        box.Offset(dx, dx);
++      }
++    }
++    result.emplace_back(box);
+   }
+   return result;
+ }
+@@ -3491,6 +3505,17 @@ gfx::RectF Element::GetBoundingClientRectNoLifecycleUpdate() const {
+   DCHECK(element_layout_object);
+   GetDocument().AdjustRectForScrollAndAbsoluteZoom(result,
+                                                    *element_layout_object);
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_DOMRECT_NOISE)) {
++    const uint32_t s32 =
++        static_cast<uint32_t>(ant_cfg.seed() ^ (ant_cfg.seed() >> 32));
++    const float dx =
++        ((s32 & 1u) ? 1.0f : -1.0f) *
++        (static_cast<float>((s32 >> 1u) & 0x3Fu) / 63.0f) * 1e-4f;
++    if (std::isfinite(result.x() + dx) && std::isfinite(result.y() + dx)) {
++      result.Offset(dx, dx);
++    }
++  }
+   return result;
+ }
+ 
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+index bc4c0c6..87aee01 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_buffer.cc
+@@ -28,9 +28,13 @@
+ 
+ #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
+ 
++#include <algorithm>
++#include <cmath>
+ #include <memory>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/compiler_specific.h"
++#include "base/numerics/checked_math.h"
+ #include "base/containers/span.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
+ #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
+@@ -267,6 +271,31 @@ void AudioBuffer::copyFromChannel(NotShared<DOMFloat32Array> destination,
+   DCHECK(dst.data());
+ 
+   dst.first(count).copy_from(src.subspan(buffer_offset, count));
++
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_AUDIO_NOISE) && count > 0) {
++    base::CheckedNumeric<size_t> safe_count = count;
++    if (safe_count.IsValid() && safe_count.ValueOrDie() <= dst.size()) {
++      base::span<float> out_span = dst.first(safe_count.ValueOrDie());
++      const uint32_t seed32 =
++          static_cast<uint32_t>(ant_cfg.seed() ^ (ant_cfg.seed() >> 32));
++      for (size_t i = 0; i < out_span.size(); ++i) {
++        const float sample = out_span[i];
++        if (!std::isfinite(sample) || sample == 0.0f) {
++          continue;
++        }
++        const uint32_t h =
++            (seed32 ^ static_cast<uint32_t>(channel_number) * 747796405u ^
++             static_cast<uint32_t>(i + buffer_offset) * 2891336453u);
++        const float sign = (h & 1u) ? 1.0f : -1.0f;
++        const float eps =
++            sign * (static_cast<float>((h >> 1u) & 0xFFu) / 255.0f) * 1e-6f;
++        const float perturbed = sample + eps;
++        out_span[i] =
++            std::isfinite(perturbed) ? std::clamp(perturbed, -1.0f, 1.0f) : sample;
++      }
++    }
++  }
+ }
+ 
+ void AudioBuffer::copyToChannel(NotShared<DOMFloat32Array> source,

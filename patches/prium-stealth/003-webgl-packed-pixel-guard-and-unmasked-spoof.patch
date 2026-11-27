@@ -1,0 +1,113 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 003/012] WebGL packed-pixel glReadPixels guard & unmasked vendor/renderer spoof
+
+Hardens WebGL/WebGL2 glReadPixels against packed 16-bit buffer overruns
+(GL_UNSIGNED_SHORT_5_6_5, GL_UNSIGNED_SHORT_4_4_4_4, GL_UNSIGNED_SHORT_5_5_5_1)
+via base::CheckedNumeric + base::span and spoofs UNMASKED_VENDOR/RENDERER.
+
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index ceb4c3f..42b2985 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -27,10 +27,13 @@
+ 
+ #include <inttypes.h>
+ 
++#include <algorithm>
+ #include <memory>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/bit_cast.h"
++#include "base/containers/span.h"
+ #include "base/byte_size.h"
+ #include "base/compiler_specific.h"
+ #include "base/feature_list.h"
+@@ -4185,6 +4188,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++        if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) &&
++            !ant_cfg.webgl_renderer().empty()) {
++          return WebGLAny(script_state,
++                          String::FromUTF8(ant_cfg.webgl_renderer()));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_RENDERER)));
+       }
+@@ -4194,6 +4203,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++        if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) &&
++            !ant_cfg.webgl_vendor().empty()) {
++          return WebGLAny(script_state,
++                          String::FromUTF8(ant_cfg.webgl_vendor()));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_VENDOR)));
+       }
+@@ -5341,6 +5356,61 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
++
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) && data &&
++      width > 0 && height > 0) {
++    size_t bpp = 0u;
++    switch (type) {
++      case GL_UNSIGNED_SHORT_5_6_5:
++      case GL_UNSIGNED_SHORT_4_4_4_4:
++      case GL_UNSIGNED_SHORT_5_5_5_1:
++        bpp = 2u;
++        break;
++      case GL_UNSIGNED_BYTE:
++        bpp = (format == GL_RGB) ? 3u : 4u;
++        break;
++      default:
++        bpp = 0u;
++        break;
++    }
++    base::CheckedNumeric<size_t> safe_cap =
++        static_cast<size_t>(buffer_size.ValueOrDie());
++    if (bpp > 0u && safe_cap.IsValid()) {
++      base::span<uint8_t> dst_span =
++          UNSAFE_TODO(base::span<uint8_t>(data, safe_cap.ValueOrDie()));
++      const size_t align =
++          std::max<size_t>(1u, static_cast<size_t>(pack_alignment_));
++      base::CheckedNumeric<size_t> row_bytes = static_cast<size_t>(width);
++      row_bytes *= bpp;
++      base::CheckedNumeric<size_t> padded = row_bytes + (align - 1u);
++      if (padded.IsValid()) {
++        const size_t stride = (padded.ValueOrDie() / align) * align;
++        base::CheckedNumeric<size_t> total_bytes =
++            static_cast<size_t>(height - 1);
++        total_bytes *= stride;
++        total_bytes += row_bytes;
++        if (total_bytes.IsValid() &&
++            total_bytes.ValueOrDie() <= dst_span.size()) {
++          const uint32_t seed32 = static_cast<uint32_t>(
++              ant_cfg.seed() ^ (ant_cfg.seed() >> 32));
++          for (size_t py = 0; py < static_cast<size_t>(height); ++py) {
++            for (size_t px = 0; px + 1 < static_cast<size_t>(width); ++px) {
++              const size_t idx = (py * stride + px * bpp);
++              if (((px ^ py ^ seed32) % 23u) != 0u) {
++                continue;
++              }
++              if (bpp == 2u && idx + 1u < dst_span.size()) {
++                dst_span[idx] ^= 0x01u;
++              } else if (bpp >= 3u && idx + 2u < dst_span.size()) {
++                dst_span[idx + 2u] ^= 0x01u;
++              }
++            }
++          }
++        }
++      }
++    }
++  }
+ }
+ 
+ void WebGLRenderingContextBase::RenderbufferStorageImpl(

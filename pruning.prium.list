@@ -1,0 +1,2 @@
+# Minimal non-redistributable binary pruning list for Prium-Core (Chromium 150)
+chrome/browser/resources/media/mei_preload/preloaded_data.pb

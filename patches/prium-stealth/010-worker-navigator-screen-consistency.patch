@@ -1,0 +1,88 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 010/012] Window/Worker Navigator & ScreenWin virtual display parity
+
+Overrides NavigatorDeviceMemory::deviceMemory (<= 8) and
+NavigatorConcurrentHardware::hardwareConcurrency for both Page and Workers,
+and applies ANTKRN01 screen dimensions & devicePixelRatio in ScreenWin.
+
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+index f5c0db2..bf30cee 100644
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
+ #include "base/system/sys_info.h"
+@@ -9,6 +10,10 @@
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.is_loaded() && ant_cfg.hardware_concurrency() > 0u) {
++    return ant_cfg.hardware_concurrency();
++  }
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e..f621327 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -2,6 +2,9 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <algorithm>
++
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
+ #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
+@@ -12,6 +15,10 @@
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.is_loaded() && ant_cfg.device_memory() > 0u) {
++    return static_cast<float>(std::min<uint32_t>(ant_cfg.device_memory(), 8u));
++  }
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
+ }
+ 
+diff --git a/ui/display/win/screen_win.cc b/ui/display/win/screen_win.cc
+index 1ee6c26..7a21613 100644
+--- a/ui/display/win/screen_win.cc
++++ b/ui/display/win/screen_win.cc
+@@ -12,6 +12,7 @@
+ #include <optional>
+ #include <sstream>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/callback_list.h"
+ #include "base/check.h"
+ #include "base/compiler_specific.h"
+@@ -1037,6 +1038,20 @@ void ScreenWin::UpdateFromDisplayInfos(
+ 
+   screen_win_displays_ = std::move(new_screen_win_displays);
+ 
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.is_loaded() && !screen_win_displays_.empty() &&
++      ant_cfg.screen_width() > 0u && ant_cfg.screen_height() > 0u) {
++    auto& primary = screen_win_displays_[0].modifiable_display();
++    const gfx::Rect virt_bounds(0, 0, static_cast<int>(ant_cfg.screen_width()),
++                                static_cast<int>(ant_cfg.screen_height()));
++    primary.set_bounds(virt_bounds);
++    primary.set_work_area(
++        gfx::Rect(0, 0, virt_bounds.width(),
++                  std::max(1, virt_bounds.height() - 40)));
++    primary.set_device_scale_factor(
++        static_cast<float>(ant_cfg.device_pixel_ratio()));
++  }
++
+   std::vector<Display> displays =
+       ScreenWinDisplaysToDisplays(screen_win_displays_);
+   if (displays != displays_) {

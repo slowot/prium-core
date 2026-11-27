@@ -1,0 +1,38 @@
+# Prium-Core Chromium 150.0.7871.186 Win64 patch series
+# 1. Windows MSVC / Clang / Rust build fixes
+win-toolchain/windows-compile-mini-installer.patch
+win-toolchain/windows-disable-clang-version-check.patch
+win-toolchain/windows-disable-event-log.patch
+win-toolchain/windows-disable-rcpy.patch
+win-toolchain/windows-disable-reorder-fix-linking.patch
+win-toolchain/windows-disable-win-build-output.patch
+win-toolchain/windows-fix-building-gn.patch
+win-toolchain/windows-fix-building-with-rust.patch
+win-toolchain/windows-fix-clang-format-exe.patch
+win-toolchain/windows-fix-command-ids.patch
+win-toolchain/windows-fix-generate-resource-allowed-list.patch
+win-toolchain/windows-fix-licenses-gn-path.patch
+win-toolchain/windows-fix-missing-includes.patch
+win-toolchain/windows-fix-rc-terminating-error.patch
+win-toolchain/windows-fix-rc.patch
+win-toolchain/windows-no-unknown-warnings.patch
+
+# 2. Minimal de-googling core
+degoogle-core/01-safebrowsing-stub-build.patch
+degoogle-core/02-pruned-binaries-min.patch
+degoogle-core/03-suppress-google-api-key-infobar.patch
+degoogle-core/04-devtools-standalone-rollup-paths.patch
+
+# 3. Prium-Core Stealth, NetGuard, and PriumVault AES-256-GCM OS Crypt
+prium-stealth/001-ant-shm-zero-cli-config.patch
+prium-stealth/002-safe-canvas-bounds-and-deterministic-noise.patch
+prium-stealth/003-webgl-packed-pixel-guard-and-unmasked-spoof.patch
+prium-stealth/004-audiocontext-and-domrect-precision-hardening.patch
+prium-stealth/005-webrtc-cdp-stealth-and-clienthints-consistency.patch
+prium-stealth/006-structured-blackbox-crash-and-stealth-telemetry.patch
+prium-stealth/007-prium-netguard-and-variations-freeze.patch
+prium-stealth/008-boringssl-ja4-and-http2-alignment.patch
+prium-stealth/009-native-icu-timezone-and-font-isolation.patch
+prium-stealth/010-worker-navigator-screen-consistency.patch
+prium-stealth/011-native-battery-webgpu-offscreencanvas.patch
+prium-stealth/012-prium-vault-aes-gcm-os-crypt.patch

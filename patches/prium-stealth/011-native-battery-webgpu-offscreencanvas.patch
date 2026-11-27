@@ -1,0 +1,141 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 011/012] Native Battery desktop parity, WebGPU adapter & OffscreenCanvas guard
+
+Normalizes BatteryStatusManagerWin without removing getBattery(), aligns
+GPUAdapter vendor/description with webgl_vendor/renderer, and guards
+OffscreenCanvas::convertToBlob with bounded (y * stride + x * 4) edge noise.
+
+diff --git a/services/device/battery/battery_status_manager_win.cc b/services/device/battery/battery_status_manager_win.cc
+index b75b090..f7d9614 100644
+--- a/services/device/battery/battery_status_manager_win.cc
++++ b/services/device/battery/battery_status_manager_win.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <string>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/callback_list.h"
+ #include "base/functional/bind.h"
+ #include "services/device/battery/battery_status_manager.h"
+@@ -117,6 +118,13 @@ class BatteryStatusManagerWin : public BatteryStatusManager {
+ mojom::BatteryStatus ComputeWebBatteryStatus(
+     const SYSTEM_POWER_STATUS& win_status) {
+   mojom::BatteryStatus status;
++  if (ant_chromium::AntShmConfig::Get().is_loaded()) {
++    status.charging = true;
++    status.charging_time = 0.0;
++    status.discharging_time = std::numeric_limits<double>::infinity();
++    status.level = 1.0;
++    return status;
++  }
+   status.charging = win_status.ACLineStatus != WIN_AC_LINE_STATUS_OFFLINE;
+ 
+   // Set level if available. Otherwise keep the default value which is 1.
+diff --git a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
+index 229ed84..10fc3f1 100644
+--- a/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
++++ b/third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.cc
+@@ -7,7 +7,14 @@
+ #include <memory>
+ #include <utility>
+ 
++#include <algorithm>
++
++#include "base/ant_chromium/ant_shm_config.h"
++#include "base/compiler_specific.h"
++#include "base/containers/span.h"
+ #include "base/feature_list.h"
++#include "base/numerics/checked_math.h"
++#include "third_party/skia/include/core/SkBitmap.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
+@@ -432,6 +439,46 @@ ScriptPromise<Blob> OffscreenCanvas::convertToBlob(
+   base::TimeTicks start_time = base::TimeTicks::Now();
+   scoped_refptr<StaticBitmapImage> image_bitmap = context_->GetImage();
+   if (image_bitmap) {
++    const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++    if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CANVAS_NOISE)) {
++      const cc::PaintImage paint_image =
++          image_bitmap->PaintImageForCurrentFrame();
++      const SkImageInfo sk_info =
++          paint_image.GetSkImageInfo().makeColorType(kRGBA_8888_SkColorType);
++      base::CheckedNumeric<size_t> row_bytes =
++          static_cast<size_t>(sk_info.width());
++      row_bytes *= 4u;
++      base::CheckedNumeric<size_t> total_bytes = row_bytes;
++      total_bytes *= static_cast<size_t>(sk_info.height());
++      SkBitmap bitmap;
++      if (sk_info.width() >= 2 && sk_info.height() > 0 &&
++          row_bytes.IsValid() && total_bytes.IsValid() &&
++          bitmap.tryAllocPixels(sk_info, row_bytes.ValueOrDie()) &&
++          paint_image.readPixels(sk_info, bitmap.getPixels(),
++                                 bitmap.rowBytes(), 0, 0)) {
++        base::span<uint8_t> pixel_span = UNSAFE_TODO(base::span<uint8_t>(
++            static_cast<uint8_t*>(bitmap.getPixels()),
++            total_bytes.ValueOrDie()));
++        const size_t stride = bitmap.rowBytes();
++        const size_t width = static_cast<size_t>(sk_info.width());
++        const size_t height = static_cast<size_t>(sk_info.height());
++        for (size_t y = 0; y < height; ++y) {
++          for (size_t x = 0; x + 1 < width; ++x) {
++            const size_t idx = (y * stride + x * 4);
++            if (idx + 7 < pixel_span.size() &&
++                pixel_span[idx] != pixel_span[idx + 4]) {
++              pixel_span[idx + 2] ^=
++                  static_cast<uint8_t>((ant_cfg.seed() ^ x ^ y) & 1u);
++            }
++          }
++        }
++        bitmap.setImmutable();
++        if (auto safe_img = UnacceleratedStaticBitmapImage::Create(
++                bitmap.asImage())) {
++          image_bitmap = std::move(safe_img);
++        }
++      }
++    }
+     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<Blob>>(
+         script_state, exception_state.GetContext());
+     CanvasAsyncBlobCreator::ToBlobFunctionType function_type =
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+index 4e4ca8d..39042eb 100644
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+ 
++#include "base/ant_chromium/ant_shm_config.h"
++#include "base/strings/string_util.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+@@ -103,6 +105,28 @@ GPUAdapter::GPUAdapter(
+   }
+   description_ = String::FromUtf8(info.device);
+   driver_ = String::FromUtf8(info.description);
++
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) &&
++      !ant_cfg.webgl_vendor().empty()) {
++    const std::string lower_vendor = base::ToLowerASCII(ant_cfg.webgl_vendor());
++    if (lower_vendor.find("nvidia") != std::string::npos) {
++      vendor_ = "nvidia";
++    } else if (lower_vendor.find("amd") != std::string::npos ||
++               lower_vendor.find("ati") != std::string::npos) {
++      vendor_ = "amd";
++    } else if (lower_vendor.find("intel") != std::string::npos) {
++      vendor_ = "intel";
++    } else if (lower_vendor.find("apple") != std::string::npos) {
++      vendor_ = "apple";
++    } else {
++      vendor_ = String::FromUTF8(lower_vendor);
++    }
++    if (!ant_cfg.webgl_renderer().empty()) {
++      description_ = String::FromUTF8(ant_cfg.webgl_renderer());
++      driver_ = String::FromUTF8(ant_cfg.webgl_renderer());
++    }
++  }
+   if (supportsPropertiesD3D) {
+     d3d_shader_model_ = d3dProperties.shaderModel;
+   }

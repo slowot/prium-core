@@ -1,0 +1,178 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 002/012] Memory-safe Canvas2D readback bounds & deterministic edge noise
+
+Replaces unguarded pixel indexing in Canvas2D readback with base::span and
+base::CheckedNumeric<size_t> bounds checks and parenthesized (y * stride + x * 4)
+addressing against vanilla Chromium 150.0.7871.186.
+
+diff --git a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+index ce8231f..a812da7 100644
+--- a/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
++++ b/third_party/blink/renderer/core/html/canvas/html_canvas_element.cc
+@@ -33,7 +33,15 @@
+ #include <memory>
+ #include <utility>
+ 
++#include <algorithm>
++#include <vector>
++
++#include "base/ant_chromium/ant_shm_config.h"
++#include "base/compiler_specific.h"
++#include "base/containers/span.h"
+ #include "base/feature_list.h"
++#include "cc/paint/paint_image.h"
++#include "third_party/skia/include/core/SkImageInfo.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/location.h"
+ #include "base/metrics/histogram.h"
+@@ -1311,8 +1319,46 @@ String HTMLCanvasElement::ToDataURLInternal(
+ 
+   scoped_refptr<StaticBitmapImage> image_bitmap = Snapshot(source_buffer);
+   if (image_bitmap) {
+-    std::unique_ptr<ImageDataBuffer> data_buffer =
+-        ImageDataBuffer::Create(image_bitmap);
++    std::unique_ptr<ImageDataBuffer> data_buffer;
++    std::vector<uint8_t> perturbed_pixels;
++    const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++    if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CANVAS_NOISE)) {
++      const cc::PaintImage paint_image =
++          image_bitmap->PaintImageForCurrentFrame();
++      const SkImageInfo sk_info =
++          paint_image.GetSkImageInfo().makeColorType(kRGBA_8888_SkColorType);
++      base::CheckedNumeric<size_t> row_bytes =
++          static_cast<size_t>(sk_info.width());
++      row_bytes *= 4u;
++      base::CheckedNumeric<size_t> total_bytes = row_bytes;
++      total_bytes *= static_cast<size_t>(sk_info.height());
++      if (sk_info.width() >= 2 && sk_info.height() > 0 &&
++          row_bytes.IsValid() && total_bytes.IsValid()) {
++        perturbed_pixels.resize(total_bytes.ValueOrDie());
++        if (paint_image.readPixels(sk_info, perturbed_pixels.data(),
++                                   row_bytes.ValueOrDie(), 0, 0)) {
++          base::span<uint8_t> raw_span(perturbed_pixels);
++          const size_t stride = row_bytes.ValueOrDie();
++          const size_t width = static_cast<size_t>(sk_info.width());
++          const size_t height = static_cast<size_t>(sk_info.height());
++          for (size_t y = 0; y < height; ++y) {
++            for (size_t x = 0; x + 1 < width; ++x) {
++              const size_t idx = (y * stride + x * 4);
++              if (idx + 7 < raw_span.size() &&
++                  raw_span[idx] != raw_span[idx + 4]) {
++                raw_span[idx + 2] ^=
++                    static_cast<uint8_t>((ant_cfg.seed() ^ x ^ y) & 1u);
++              }
++            }
++          }
++          data_buffer = ImageDataBuffer::Create(
++              SkPixmap(sk_info, perturbed_pixels.data(), stride));
++        }
++      }
++    }
++    if (!data_buffer) {
++      data_buffer = ImageDataBuffer::Create(image_bitmap);
++    }
+     if (!data_buffer)
+       return String("data:,");
+ 
+diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+index f939e8d..9f975da 100644
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -11,7 +12,10 @@
+ #include <optional>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/check.h"
++#include "base/compiler_specific.h"
++#include "base/containers/span.h"
+ #include "base/check_op.h"
+ #include "base/location.h"
+ #include "base/memory/scoped_refptr.h"
+@@ -112,6 +116,55 @@ class MemoryManagedPaintCanvas;
+ 
+ namespace {
+ 
++void ApplySafeEdgeCanvasPerturbation(base::span<uint8_t> pixel_span,
++                                     size_t width,
++                                     size_t height,
++                                     size_t stride,
++                                     uint64_t seed) {
++  if (width < 2 || height == 0 || pixel_span.empty()) {
++    return;
++  }
++  base::CheckedNumeric<size_t> row_min = width;
++  row_min *= 4u;
++  if (!row_min.IsValid() || stride < row_min.ValueOrDie()) {
++    return;
++  }
++  base::CheckedNumeric<size_t> last_row_offset = height - 1u;
++  last_row_offset *= stride;
++  last_row_offset += row_min.ValueOrDie();
++  if (!last_row_offset.IsValid() ||
++      last_row_offset.ValueOrDie() > pixel_span.size()) {
++    return;
++  }
++
++  const uint32_t seed32 = static_cast<uint32_t>(seed ^ (seed >> 32));
++  for (size_t y = 0; y < height; ++y) {
++    for (size_t x = 0; x + 1 < width; ++x) {
++      const size_t idx = (y * stride + x * 4);
++      const size_t next_idx = (y * stride + (x + 1) * 4);
++      if (next_idx + 3 >= pixel_span.size()) {
++        break;
++      }
++      const bool is_edge =
++          (pixel_span[idx] != pixel_span[next_idx]) ||
++          (pixel_span[idx + 1] != pixel_span[next_idx + 1]) ||
++          (pixel_span[idx + 2] != pixel_span[next_idx + 2]) ||
++          (pixel_span[idx + 3] != pixel_span[next_idx + 3]);
++      if (!is_edge) {
++        continue;
++      }
++      const uint32_t h =
++          (static_cast<uint32_t>(x) ^ seed32) * 2654435761u ^
++          static_cast<uint32_t>(y) * 2246822519u;
++      if ((h % 17u) != 0u) {
++        continue;
++      }
++      const int delta = ((h >> 5u) & 1u) ? 1 : -1;
++      const int blue = static_cast<int>(pixel_span[idx + 2]) + delta;
++      pixel_span[idx + 2] = static_cast<uint8_t>(std::clamp(blue, 0, 255));
++    }
++  }
++}
+ 
+ bool IsContextProviderValid() {
+   base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper =
+@@ -511,6 +564,22 @@ ImageData* BaseRenderingContext2D::getImageDataInternal(
+           snapshot->PaintImageForCurrentFrame().GetSkImageInfo().bounds();
+       DCHECK(!bounds.intersect(SkIRect::MakeXYWH(sx, sy, sw, sh)));
+     }
++    const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++    if (read_pixels_successful &&
++        ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CANVAS_NOISE)) {
++      base::CheckedNumeric<size_t> checked_bytes =
++          image_data_pixmap.computeByteSize();
++      if (checked_bytes.IsValid() && checked_bytes.ValueOrDie() > 0u &&
++          image_data_pixmap.writable_addr()) {
++        base::span<uint8_t> pixel_span = UNSAFE_TODO(base::span<uint8_t>(
++            static_cast<uint8_t*>(image_data_pixmap.writable_addr()),
++            checked_bytes.ValueOrDie()));
++        ApplySafeEdgeCanvasPerturbation(
++            pixel_span, static_cast<size_t>(image_data_pixmap.width()),
++            static_cast<size_t>(image_data_pixmap.height()),
++            image_data_pixmap.rowBytes(), ant_cfg.seed());
++      }
++    }
+   }
+ 
+   return image_data;

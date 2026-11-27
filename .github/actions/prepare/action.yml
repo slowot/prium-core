@@ -1,0 +1,67 @@
+name: Prepare Prium-Core Build Environment
+description: Reclaim disk space, configure Defender exclusions, install Python 3.12, Node 22 fallback, and sccache v0.10.0
+inputs:
+  python-version:
+    description: Python version
+    required: false
+    default: '3.12'
+runs:
+  using: composite
+  steps:
+    - name: Reclaim Runner Disk Space & Configure Defender Exclusion
+      shell: pwsh
+      run: |
+        foreach ($dir in @('C:\Android', 'C:\ghcup', 'C:\Strawberry')) {
+          if (Test-Path $dir) {
+            Write-Host "Removing $dir to free disk space..."
+            cmd /c "rmdir /s /q `"$dir`"" | Out-Null
+          }
+        }
+        try {
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath 'C:\prium-core' -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionPath 'C:\sccache' -ErrorAction SilentlyContinue
+        } catch {}
+        Get-PSDrive C | Select-Object Used, Free
+
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Set up Node.js 22 LTS fallback
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install sccache v0.10.0
+      shell: pwsh
+      run: |
+        $sccacheDir = 'C:\sccache'
+        New-Item -ItemType Directory -Path $sccacheDir -Force | Out-Null
+        $zipPath = Join-Path $env:RUNNER_TEMP 'sccache-v0.10.0-x86_64-pc-windows-msvc.zip'
+        $url = 'https://github.com/mozilla/sccache/releases/download/v0.10.0/sccache-v0.10.0-x86_64-pc-windows-msvc.zip'
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+        $extractDir = Join-Path $env:RUNNER_TEMP 'sccache-extract'
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+        $exe = Get-ChildItem -Path $extractDir -Recurse -Filter 'sccache.exe' | Select-Object -First 1
+        if (-not $exe) {
+          throw "sccache.exe not found inside $url"
+        }
+        Copy-Item -Path $exe.FullName -Destination (Join-Path $sccacheDir 'sccache.exe') -Force
+        Remove-Item -Path $zipPath, $extractDir -Recurse -Force
+        $sccacheDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        & (Join-Path $sccacheDir 'sccache.exe') --version
+
+    - name: Copy Workspace to C:\prium-core
+      shell: pwsh
+      run: |
+        if (Test-Path 'C:\prium-core') {
+          cmd /c "rmdir /s /q `"C:\prium-core`"" | Out-Null
+        }
+        Copy-Item -Path . -Destination 'C:\prium-core' -Recurse
+
+    - name: Setup Stage Action Dependencies
+      shell: pwsh
+      run: npm install
+      working-directory: ./.github/actions/stage

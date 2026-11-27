@@ -1,0 +1,50 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 008/012] BoringSSL JA4 TLS extension permutation & HTTP/2 GREASE parity
+
+Aligns BoringSSL GREASE + TLS extension permutation and HTTP/2 SETTINGS GREASE
+frames with genuine modern desktop Chrome builds when ANTKRN01 is active.
+
+diff --git a/net/http/http_network_session.cc b/net/http/http_network_session.cc
+index 0ccbec3..3df1598 100644
+--- a/net/http/http_network_session.cc
++++ b/net/http/http_network_session.cc
+@@ -8,6 +8,7 @@
+ 
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/atomic_sequence_num.h"
+ #include "base/check_op.h"
+ #include "base/compiler_specific.h"
+@@ -96,6 +97,9 @@ HttpNetworkSessionParams::HttpNetworkSessionParams()
+       time_func(&base::TimeTicks::Now) {
+   enable_early_data =
+       base::FeatureList::IsEnabled(features::kEnableTLS13EarlyData);
++  if (ant_chromium::AntShmConfig::Get().is_loaded()) {
++    enable_http2_settings_grease = true;
++  }
+ }
+ 
+ HttpNetworkSessionParams::HttpNetworkSessionParams(
+diff --git a/net/socket/ssl_client_socket_impl.cc b/net/socket/ssl_client_socket_impl.cc
+index b3d4cb9..0bee0de 100644
+--- a/net/socket/ssl_client_socket_impl.cc
++++ b/net/socket/ssl_client_socket_impl.cc
+@@ -14,6 +14,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/containers/span.h"
+ #include "base/containers/to_vector.h"
+ #include "base/feature_list.h"
+@@ -205,6 +206,9 @@ class SSLClientSocketImpl::SSLContext {
+     SSL_CTX_set_timeout(ssl_ctx_.get(), 1 * 60 * 60 /* one hour */);
+ 
+     SSL_CTX_set_grease_enabled(ssl_ctx_.get(), 1);
++    if (ant_chromium::AntShmConfig::Get().is_loaded()) {
++      SSL_CTX_set_permute_extensions(ssl_ctx_.get(), 1);
++    }
+ 
+     // Deduplicate all certificates minted from the SSL_CTX in memory.
+     SSL_CTX_set0_buffer_pool(ssl_ctx_.get(), x509_util::GetBufferPool());

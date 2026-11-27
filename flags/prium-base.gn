@@ -1,0 +1,34 @@
+# Prium-Core Base GN Flags (Chromium 150.0.7871.186 Win64)
+# Strict --fail-on-unused-args clean:
+# - No is_cfi (Linux/CrOS ELF only; Windows Official enables /guard:cf)
+# - No rustc_wrapper (not a declared GN arg in rust.gni)
+# - No v8_drumbrake_bounds_checks
+# - Leave enable_mdns, enable_service_discovery, enable_reporting at native defaults
+
+target_os = "win"
+target_cpu = "x64"
+is_official_build = true
+is_debug = false
+dcheck_always_on = false
+is_clang = true
+use_lld = true
+is_component_build = false
+use_sysroot = false
+enable_rust = true
+treat_warnings_as_errors = false
+clang_use_chrome_plugins = false
+
+safe_browsing_mode = 0
+google_api_key = ""
+google_default_client_id = ""
+google_default_client_secret = ""
+use_official_google_api_keys = false
+use_unofficial_version_number = false
+disable_fieldtrial_testing_config = true
+enable_hangout_services_extension = false
+enable_remoting = false
+enable_widevine = true
+enable_swiftshader = false
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
+enable_mse_mpeg2ts_stream_parser = true

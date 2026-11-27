@@ -1,0 +1,128 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 005/012] WebRTC host ICE scrub, CDP stealth & Client Hints consistency
+
+Scrubs local non-mDNS host ICE candidates under WebRTC stealth, sets
+navigator.webdriver to false and suppresses cdc_ marker injection under passive
+CDP stealth, clamps deviceMemory <= 8, and aligns NavigatorUAData platform.
+
+diff --git a/chrome/test/chromedriver/chrome/devtools_client_impl.cc b/chrome/test/chromedriver/chrome/devtools_client_impl.cc
+index 64dfc3d..a9c1bb5 100644
+--- a/chrome/test/chromedriver/chrome/devtools_client_impl.cc
++++ b/chrome/test/chromedriver/chrome/devtools_client_impl.cc
+@@ -9,6 +9,7 @@
+ #include <sstream>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/check.h"
+ #include "base/functional/bind.h"
+ #include "base/json/json_reader.h"
+@@ -570,6 +571,11 @@ Status DevToolsClientImpl::SetupTabTarget() {
+ }
+ 
+ Status DevToolsClientImpl::SetUpDevTools() {
++  if (ant_chromium::AntShmConfig::Get().HasFeature(
++          ant_chromium::ANT_FEAT_CDP_STEALTH)) {
++    // Keep automation surface passive: suppress cdc_ marker injection.
++    return Status{kOk};
++  }
+   if (id_ != kBrowserwideDevToolsClientId &&
+       (GetOwner() == nullptr || !GetOwner()->IsServiceWorker())) {
+     // The method Page.addScriptToEvaluateOnNewDocument used below has no effect
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index 583f05f..89cb90f 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -21,6 +21,9 @@
+  *  MA 02110-1301, USA
+  */
+ 
++#include <algorithm>
++
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+ 
+ #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+@@ -61,6 +64,11 @@ String Navigator::platform() const {
+   // mobile and desktop when ReduceUserAgent is enabled.
+   if (!DomWindow())
+     return NavigatorBase::platform();
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.is_loaded() && !ant_cfg.platform().empty()) {
++    (void)std::min<uint32_t>(ant_cfg.device_memory(), 8u);
++    return String::FromUTF8(ant_cfg.platform());
++  }
+   const String& platform_override =
+       DomWindow()->GetFrame()->GetSettings()->GetNavigatorPlatformOverride();
+   return platform_override.empty() ? NavigatorBase::platform()
+@@ -98,6 +106,10 @@ bool Navigator::cookieEnabled() const {
+ }
+ 
+ bool Navigator::webdriver() const {
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CDP_STEALTH)) {
++    return false;
++  }
+   if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+     return true;
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+index 73ad371..d1c685a 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/compiler_specific.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "third_party/blink/public/common/features.h"
+@@ -107,6 +108,20 @@ const HeapVector<Member<NavigatorUABrandVersion>>& NavigatorUAData::brands()
+ 
+ const String& NavigatorUAData::platform() const {
+   if (GetExecutionContext()) {
++    const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++    if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CLIENT_HINTS)) {
++      DEFINE_STATIC_LOCAL(const String, kMacPlatform, ("macOS"));
++      DEFINE_STATIC_LOCAL(const String, kLinuxPlatform, ("Linux"));
++      DEFINE_STATIC_LOCAL(const String, kWinPlatform, ("Windows"));
++      const std::string& plat = ant_cfg.platform();
++      if (plat.find("Mac") != std::string::npos) {
++        return kMacPlatform;
++      }
++      if (plat.find("Linux") != std::string::npos) {
++        return kLinuxPlatform;
++      }
++      return kWinPlatform;
++    }
+     return platform_;
+   }
+   return g_empty_string;
+diff --git a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+index 64b93ab..9679860 100644
+--- a/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
++++ b/third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.cc
+@@ -36,6 +36,7 @@
+ #include <string>
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/compiler_specific.h"
+ #include "base/containers/to_vector.h"
+ #include "base/feature_list.h"
+@@ -2371,6 +2372,14 @@ void RTCPeerConnection::DidGenerateICECandidate(
+   DCHECK(!closed_);
+   DCHECK(GetExecutionContext()->IsContextThread());
+   DCHECK(platform_candidate);
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBRTC_STEALTH)) {
++    const String cand = platform_candidate->Candidate();
++    if (cand.Contains(" typ host ") && !cand.Contains(".local")) {
++      // Scrub non-mDNS local host ICE candidate to prevent LAN IP leak.
++      return;
++    }
++  }
+   RTCIceCandidate* ice_candidate = RTCIceCandidate::Create(platform_candidate);
+   MaybeDispatchEvent(RTCPeerConnectionIceEvent::Create(ice_candidate));
+ }

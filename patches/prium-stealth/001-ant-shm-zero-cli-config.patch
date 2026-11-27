@@ -1,0 +1,70 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 001/012] Zero-CLI Win32 Shared Memory (ANTKRN01) configuration & PriumVault header
+
+Adds base/ant_chromium/ant_shm_config.{h,cc} inside //base (BASE_EXPORT)
+reading ANTKRN01 4096-byte Win32 shared memory via ANT_CHROMIUM_SHM_KEY with
+CRC32 verification, PriumVault offsets (1888..1940), volatile SecureZeroMemory
+cleanup, and kernel marker AntChromiumKernel/150.0.7871.186 ant-chromium-shm-v1.
+
+diff --git a/base/BUILD.gn b/base/BUILD.gn
+index 4dae6c2..173afea 100644
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -229,6 +229,8 @@ source_set("asan_raw_ptr_service") {
+ # directory) which should use source_set as is recommended for GN targets).
+ component("base") {
+   sources = [
++    "ant_chromium/ant_shm_config.cc",
++    "ant_chromium/ant_shm_config.h",
+     "allocator/allocator_check.cc",
+     "allocator/allocator_check.h",
+     "allocator/dispatcher/configuration.h",
+diff --git a/chrome/app/chrome_main_delegate.cc b/chrome/app/chrome_main_delegate.cc
+index df8f945..ca05591 100644
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -9,6 +9,7 @@
+ #include <string>
+ #include <variant>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base_paths.h"
+ #include "base/check.h"
+ #include "base/command_line.h"
+@@ -379,9 +380,10 @@ bool HandleVersionSwitches(const base::CommandLine& command_line) {
+ 
+   if (command_line.HasSwitch(switches::kVersion)) {
+     UNSAFE_TODO(printf(
+-        "%s %s %s\n", version_info::GetProductName().data(),
++        "%s %s %s (%s)\n", version_info::GetProductName().data(),
+         version_info::GetVersionNumber().data(),
+-        chrome::GetChannelName(chrome::WithExtendedStable(true)).c_str()));
++        chrome::GetChannelName(chrome::WithExtendedStable(true)).c_str(),
++        ant_chromium::kAntKernelVersionMarker));
+     return true;
+   }
+ 
+@@ -1059,6 +1061,9 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
+   ash::BootTimesRecorder::Get()->SaveChromeMainStats();
+ #endif
+ 
++  // Eagerly hydrate ANTKRN01 shared memory configuration before renderer fork.
++  (void)ant_chromium::AntShmConfig::Get();
++
+   const base::CommandLine& command_line =
+       *base::CommandLine::ForCurrentProcess();
+ 
+diff --git a/components/version_info/version_info.h b/components/version_info/version_info.h
+index 53ef508..3fcf818 100644
+--- a/components/version_info/version_info.h
++++ b/components/version_info/version_info.h
+@@ -8,4 +8,9 @@
+ #include "base/version_info/version_info.h"
+ #include "components/version_info/version_info_with_user_agent.h"
+ 
++namespace version_info {
++inline constexpr char kAntChromiumKernelMarker[] =
++    "AntChromiumKernel/150.0.7871.186 ant-chromium-shm-v1";
++}  // namespace version_info
++
+ #endif  // COMPONENTS_VERSION_INFO_VERSION_INFO_H_

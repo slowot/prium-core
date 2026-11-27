@@ -1,0 +1,94 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 009/012] Native ICU timezone adoption & Windows font enumeration isolation
+
+Adopts AntShmConfig::timezone() directly into icu::TimeZone at renderer startup
+(main + worker consistency) and filters non-standard host-installed Windows fonts.
+
+diff --git a/content/renderer/renderer_main.cc b/content/renderer/renderer_main.cc
+index 33c60ca..5e5942e 100644
+--- a/content/renderer/renderer_main.cc
++++ b/content/renderer/renderer_main.cc
+@@ -8,7 +8,9 @@
+ #include <utility>
+ 
+ #include "base/allocator/partition_alloc_support.h"
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base_switches.h"
++#include "third_party/icu/source/i18n/unicode/timezone.h"
+ #include "base/command_line.h"
+ #include "base/debug/debugger.h"
+ #include "base/debug/leak_annotations.h"
+@@ -155,6 +157,12 @@ int RendererMain(MainFunctionParams parameters) {
+   base::CurrentProcess::GetInstance().SetProcessType(
+       base::CurrentProcessType::PROCESS_RENDERER);
+ 
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.is_loaded() && !ant_cfg.timezone().empty()) {
++    icu::TimeZone::adoptDefault(icu::TimeZone::createTimeZone(
++        icu::UnicodeString::fromUTF8(ant_cfg.timezone())));
++  }
++
+   const base::CommandLine& command_line = *parameters.command_line;
+ 
+ #if BUILDFLAG(IS_MAC)
+diff --git a/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc b/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
+index 94e3c85..f3ee80c 100644
+--- a/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
++++ b/third_party/blink/renderer/platform/fonts/win/font_cache_skia_win.cc
+@@ -37,7 +37,12 @@
+ #include <string>
+ #include <utility>
+ 
++#include <array>
++#include <string_view>
++
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/debug/alias.h"
++#include "base/strings/string_util.h"
+ #include "base/feature_list.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/trace_event/trace_event.h"
+@@ -318,6 +323,29 @@ static inline bool DeprecatedEqualIgnoringCase(const AtomicString& a,
+   return DeprecatedEqualIgnoringCase(a, ToAtomicString(b));
+ }
+ 
++static bool IsAllowedBaselineWinFontFamily(const AtomicString& family) {
++  static constexpr std::array<std::string_view, 28> kBaselineFonts = {
++      "arial",           "arial black",    "calibri",
++      "cambria",         "cambria math",   "candara",
++      "comic sans ms",   "consolas",       "constantia",
++      "corbel",          "courier new",    "georgia",
++      "impact",          "lucida console", "lucida sans unicode",
++      "microsoft sans serif", "microsoft yahei", "mingliu",
++      "ms gothic",       "palatino linotype", "segoe print",
++      "segoe script",    "segoe ui",       "segoe ui emoji",
++      "segoe ui symbol", "simsun",         "tahoma",
++      "times new roman",
++  };
++  const std::string lower = base::ToLowerASCII(family.Utf8());
++  for (std::string_view allowed : kBaselineFonts) {
++    if (lower == allowed) {
++      return true;
++    }
++  }
++  return lower == "trebuchet ms" || lower == "verdana" || lower == "webdings" ||
++         lower == "wingdings";
++}
++
+ static bool TypefacesMatchesFamily(const SkTypeface* tf,
+                                    const AtomicString& family) {
+   SkTypeface::LocalizedStrings* actual_families =
+@@ -434,6 +462,13 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
+ 
+   std::string name;
+ 
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_FONT_SPOOF) &&
++      alternate_font_name != AlternateFontName::kLastResort &&
++      !IsAllowedBaselineWinFontFamily(creation_params.Family())) {
++    return nullptr;
++  }
++
+   if (alternate_font_name == AlternateFontName::kLocalUniqueFace) {
+     typeface = CreateTypefaceFromUniqueName(creation_params);
+ 

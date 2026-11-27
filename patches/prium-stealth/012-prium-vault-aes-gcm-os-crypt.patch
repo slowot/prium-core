@@ -1,0 +1,234 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 012/012] PriumVault AES-256-GCM OSCrypt portable key wrapping
+
+Implements BoringSSL EVP_aead_aes_256_gcm() ("PRV1" prefix) backed by
+ANTKRN01 vault_master_key, preserving seamless DPAPI legacy key decryption
+and guaranteeing zero plaintext credential storage.
+
+diff --git a/components/os_crypt/async/browser/dpapi_key_provider.cc b/components/os_crypt/async/browser/dpapi_key_provider.cc
+index 5ecbff3..018826c 100644
+--- a/components/os_crypt/async/browser/dpapi_key_provider.cc
++++ b/components/os_crypt/async/browser/dpapi_key_provider.cc
+@@ -9,7 +9,11 @@
+ 
+ #include <wincrypt.h>
+ 
++#include <array>
++
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base64.h"
++#include "third_party/boringssl/src/include/openssl/aead.h"
+ #include "base/compiler_specific.h"
+ #include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -35,6 +39,33 @@ constexpr char kKeyTag[] = "v10";
+ // Key prefix for a key encrypted with DPAPI. This must match kDPAPIKeyPrefix in
+ // os_crypt_win.cc to ensure the same key can be decrypted successfully.
+ constexpr uint8_t kDPAPIKeyPrefix[] = {'D', 'P', 'A', 'P', 'I'};
++constexpr uint8_t kPriumVaultKeyPrefix[] = {'P', 'R', 'V', '1'};
++constexpr size_t kPriumVaultNonceSize = 12u;
++
++std::optional<std::vector<uint8_t>> DecryptKeyWithPriumVault(
++    base::span<const uint8_t> payload,
++    const std::array<uint8_t, 32>& master_key) {
++  if (payload.size() <= kPriumVaultNonceSize) {
++    return std::nullopt;
++  }
++  bssl::ScopedEVP_AEAD_CTX ctx;
++  if (!EVP_AEAD_CTX_init(ctx.get(), EVP_aead_aes_256_gcm(), master_key.data(),
++                         master_key.size(), EVP_AEAD_DEFAULT_TAG_LENGTH,
++                         nullptr)) {
++    return std::nullopt;
++  }
++  const auto nonce = payload.first(kPriumVaultNonceSize);
++  const auto ciphertext = payload.subspan(kPriumVaultNonceSize);
++  std::vector<uint8_t> plaintext(ciphertext.size());
++  size_t out_len = 0u;
++  if (!EVP_AEAD_CTX_open(ctx.get(), plaintext.data(), &out_len,
++                         plaintext.size(), nonce.data(), nonce.size(),
++                         ciphertext.data(), ciphertext.size(), nullptr, 0)) {
++    return std::nullopt;
++  }
++  plaintext.resize(out_len);
++  return plaintext;
++}
+ 
+ std::optional<std::vector<uint8_t>> DecryptKeyWithDPAPI(
+     base::span<const uint8_t> ciphertext) {
+@@ -79,6 +110,28 @@ DPAPIKeyProvider::GetKeyInternal() {
+     return base::unexpected(KeyStatus::kKeyDecodeFailure);
+   }
+ 
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (decoded->size() >= std::size(kPriumVaultKeyPrefix) &&
++      std::equal(decoded->begin(),
++                 decoded->begin() + std::size(kPriumVaultKeyPrefix),
++                 kPriumVaultKeyPrefix)) {
++    if (!ant_cfg.HasFeature(ant_chromium::ANT_FEAT_VAULT_KEY) ||
++        ant_cfg.vault_mode() == 0u) {
++      return base::unexpected(KeyStatus::kDPAPIDecryptFailure);
++    }
++    auto vault_payload = base::span<const uint8_t>(*decoded).subspan(
++        std::size(kPriumVaultKeyPrefix));
++    auto decrypted_key =
++        DecryptKeyWithPriumVault(vault_payload, ant_cfg.vault_master_key());
++    if (!decrypted_key) {
++      return base::unexpected(KeyStatus::kDPAPIDecryptFailure);
++    }
++    if (decrypted_key->size() != Encryptor::Key::kAES256GCMKeySize) {
++      return base::unexpected(KeyStatus::kInvalidKeyLength);
++    }
++    return Encryptor::Key(*decrypted_key, mojom::Algorithm::kAES256GCM);
++  }
++
+   if (decoded->size() < std::size(kDPAPIKeyPrefix)) {
+     return base::unexpected(KeyStatus::kKeyTooShort);
+   }
+diff --git a/components/os_crypt/async/browser/os_crypt_win.cc b/components/os_crypt/async/browser/os_crypt_win.cc
+index 59482db..44f1e10 100644
+--- a/components/os_crypt/async/browser/os_crypt_win.cc
++++ b/components/os_crypt/async/browser/os_crypt_win.cc
+@@ -11,7 +11,12 @@
+ #include <string>
+ #include <vector>
+ 
++#include <array>
++
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base64.h"
++#include "base/containers/span.h"
++#include "third_party/boringssl/src/include/openssl/aead.h"
+ #include "base/logging.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/strings/strcat.h"
+@@ -36,6 +41,61 @@ constexpr char kOsCryptAuditEnabledPrefName[] = "os_crypt.audit_enabled";
+ 
+ // Key prefix for a key encrypted with DPAPI.
+ constexpr char kDPAPIKeyPrefix[] = "DPAPI";
++constexpr char kPriumVaultKeyPrefix[] = "PRV1";
++constexpr size_t kPriumVaultNonceSize = 12u;
++
++bool EncryptKeyWithPriumVault(const std::string& plaintext,
++                              const std::array<uint8_t, 32>& master_key,
++                              std::string* out_prefixed) {
++  bssl::ScopedEVP_AEAD_CTX ctx;
++  if (!EVP_AEAD_CTX_init(ctx.get(), EVP_aead_aes_256_gcm(), master_key.data(),
++                         master_key.size(), EVP_AEAD_DEFAULT_TAG_LENGTH,
++                         nullptr)) {
++    return false;
++  }
++  std::array<uint8_t, kPriumVaultNonceSize> nonce{};
++  crypto::RandBytes(nonce);
++  const size_t max_out = plaintext.size() + EVP_AEAD_MAX_OVERHEAD;
++  std::vector<uint8_t> sealed(max_out);
++  size_t out_len = 0u;
++  if (!EVP_AEAD_CTX_seal(
++          ctx.get(), sealed.data(), &out_len, sealed.size(), nonce.data(),
++          nonce.size(), reinterpret_cast<const uint8_t*>(plaintext.data()),
++          plaintext.size(), nullptr, 0)) {
++    return false;
++  }
++  out_prefixed->assign(kPriumVaultKeyPrefix);
++  out_prefixed->append(reinterpret_cast<const char*>(nonce.data()),
++                       nonce.size());
++  out_prefixed->append(reinterpret_cast<const char*>(sealed.data()), out_len);
++  return true;
++}
++
++bool DecryptKeyWithPriumVault(const std::string& payload,
++                              const std::array<uint8_t, 32>& master_key,
++                              std::string* plaintext) {
++  if (payload.size() <= kPriumVaultNonceSize) {
++    return false;
++  }
++  bssl::ScopedEVP_AEAD_CTX ctx;
++  if (!EVP_AEAD_CTX_init(ctx.get(), EVP_aead_aes_256_gcm(), master_key.data(),
++                         master_key.size(), EVP_AEAD_DEFAULT_TAG_LENGTH,
++                         nullptr)) {
++    return false;
++  }
++  const auto payload_span = base::as_byte_span(payload);
++  const auto nonce = payload_span.first(kPriumVaultNonceSize);
++  const auto ct = payload_span.subspan(kPriumVaultNonceSize);
++  std::vector<uint8_t> out(ct.size());
++  size_t out_len = 0u;
++  if (!EVP_AEAD_CTX_open(ctx.get(), out.data(), &out_len, out.size(),
++                         nonce.data(), nonce.size(), ct.data(), ct.size(),
++                         nullptr, 0)) {
++    return false;
++  }
++  plaintext->assign(reinterpret_cast<const char*>(out.data()), out_len);
++  return true;
++}
+ 
+ bool EncryptStringWithDPAPI(const std::string& plaintext,
+                             std::string* ciphertext) {
+@@ -93,12 +153,20 @@ bool DecryptStringWithDPAPI(const std::string& ciphertext,
+ }
+ 
+ bool EncryptAndStoreKey(const std::string& key, PrefService* local_state) {
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
+   std::string encrypted_key;
+-  if (!EncryptStringWithDPAPI(key, &encrypted_key)) {
+-    return false;
++  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_VAULT_KEY) &&
++      ant_cfg.vault_mode() != 0u) {
++    if (!EncryptKeyWithPriumVault(key, ant_cfg.vault_master_key(),
++                                  &encrypted_key)) {
++      return false;
++    }
++  } else {
++    if (!EncryptStringWithDPAPI(key, &encrypted_key)) {
++      return false;
++    }
++    encrypted_key.insert(0, kDPAPIKeyPrefix);
+   }
+-
+-  encrypted_key.insert(0, kDPAPIKeyPrefix);
+   std::string base64_key = base::Base64Encode(encrypted_key);
+   local_state->SetString(kOsCryptEncryptedKeyPrefName, base64_key);
+   return true;
+@@ -138,19 +206,34 @@ InitResult InitWithExistingKey(PrefService* local_state) {
+       local_state->GetString(kOsCryptEncryptedKeyPrefName);
+   std::string encrypted_key_with_header;
+ 
+-  if (!base::Base64Decode(base64_encrypted_key, &encrypted_key_with_header) ||
+-      !base::StartsWith(encrypted_key_with_header, kDPAPIKeyPrefix,
+-                        base::CompareCase::SENSITIVE)) {
++  if (!base::Base64Decode(base64_encrypted_key, &encrypted_key_with_header)) {
+     return InitResult::kInvalidKeyFormat;
+   }
+ 
+-  const std::string encrypted_key =
+-      encrypted_key_with_header.substr(sizeof(kDPAPIKeyPrefix) - 1);
+   std::string key;
+-  if (!DecryptStringWithDPAPI(encrypted_key, &key)) {
+-    base::UmaHistogramSparse("OSCrypt.Win.KeyDecryptionError",
+-                             ::GetLastError());
+-    return InitResult::kDecryptionFailed;
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  if (base::StartsWith(encrypted_key_with_header, kPriumVaultKeyPrefix,
++                       base::CompareCase::SENSITIVE)) {
++    if (!ant_cfg.HasFeature(ant_chromium::ANT_FEAT_VAULT_KEY) ||
++        ant_cfg.vault_mode() == 0u) {
++      return InitResult::kDecryptionFailed;
++    }
++    const std::string payload =
++        encrypted_key_with_header.substr(sizeof(kPriumVaultKeyPrefix) - 1);
++    if (!DecryptKeyWithPriumVault(payload, ant_cfg.vault_master_key(), &key)) {
++      return InitResult::kDecryptionFailed;
++    }
++  } else if (base::StartsWith(encrypted_key_with_header, kDPAPIKeyPrefix,
++                              base::CompareCase::SENSITIVE)) {
++    const std::string encrypted_key =
++        encrypted_key_with_header.substr(sizeof(kDPAPIKeyPrefix) - 1);
++    if (!DecryptStringWithDPAPI(encrypted_key, &key)) {
++      base::UmaHistogramSparse("OSCrypt.Win.KeyDecryptionError",
++                               ::GetLastError());
++      return InitResult::kDecryptionFailed;
++    }
++  } else {
++    return InitResult::kInvalidKeyFormat;
+   }
+ 
+   if (!local_state->GetBoolean(kOsCryptAuditEnabledPrefName)) {

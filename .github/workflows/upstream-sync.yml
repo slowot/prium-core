@@ -1,0 +1,37 @@
+name: upstream-sync
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      create_pr:
+        description: 'Create rebase branch and PR if a new Stable Windows version is found'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch-and-rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Validate Prium-Core Config & Patches
+        run: python scripts/validate_prium.py
+      - name: Run Watch & Rebase Self-Test
+        run: python scripts/watch_and_rebase.py --self-test
+      - name: Poll ChromiumDash Stable Windows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ inputs.create_pr }}" = "true" ]; then
+            python scripts/watch_and_rebase.py --3way --create-pr
+          else
+            python scripts/watch_and_rebase.py --check-only
+          fi

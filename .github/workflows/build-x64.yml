@@ -1,0 +1,35 @@
+name: build-x64
+on:
+  workflow_dispatch:
+    inputs:
+      track:
+        description: 'Build track (release = PGO+ThinLTO+PDB, dev = fast sccache)'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - dev
+      resume_run_id:
+        description: 'Optional workflow run ID whose build-artifact seeds stage 1'
+        required: false
+        default: ''
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: build-x64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build.yml
+    with:
+      track: ${{ inputs.track || 'release' }}
+      resume_run_id: ${{ inputs.resume_run_id || '' }}
+    secrets: inherit

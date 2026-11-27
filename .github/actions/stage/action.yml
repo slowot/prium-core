@@ -1,0 +1,23 @@
+name: 'Stage'
+description: 'Sync, build, cache via sccache/R2, and package Prium-Core'
+inputs:
+  finished:
+    description: Whether a previous stage already finished the build
+    required: true
+  from_artifact:
+    description: Whether to resume from a prior stage build-artifact
+    required: true
+  track:
+    description: Build track (release or dev)
+    required: false
+    default: 'release'
+  resume_run_id:
+    description: Optional prior workflow run ID whose build-artifact seeds stage 1
+    required: false
+    default: ''
+outputs:
+  finished:
+    description: Whether the build completed in this stage
+runs:
+  using: 'node24'
+  main: 'index.js'

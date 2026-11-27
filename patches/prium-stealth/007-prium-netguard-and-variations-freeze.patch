@@ -1,0 +1,129 @@
+From: Ant-Browser Kernel Team <kernel@ant-browser.local>
+Subject: [PATCH 007/012] PriumNetGuard internal telemetry sinkhole & VariationsFreeze
+
+Adds base/ant_chromium/prium_net_guard.{h,cc} pre-HostResolver double-guarded
+internal phone-home sinkhole in URLLoader::ScheduleStart, freezes Finch fetches,
+strips X-Client-Data headers, and seeds SHA1EntropyProvider from ANTKRN01.
+
+diff --git a/base/BUILD.gn b/base/BUILD.gn
+index 747a0f5..a35b4f9 100644
+--- a/base/BUILD.gn
++++ b/base/BUILD.gn
+@@ -233,6 +233,8 @@ component("base") {
+     "ant_chromium/ant_blackbox_logger.h",
+     "ant_chromium/ant_shm_config.cc",
+     "ant_chromium/ant_shm_config.h",
++    "ant_chromium/prium_net_guard.cc",
++    "ant_chromium/prium_net_guard.h",
+     "allocator/allocator_check.cc",
+     "allocator/allocator_check.h",
+     "allocator/dispatcher/configuration.h",
+diff --git a/components/variations/entropy_provider.cc b/components/variations/entropy_provider.cc
+index e9e3fc9..e02d724 100644
+--- a/components/variations/entropy_provider.cc
++++ b/components/variations/entropy_provider.cc
+@@ -8,6 +8,7 @@
+ #include <limits>
+ #include <string_view>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/check_op.h"
+ #include "base/containers/span.h"
+ #include "base/hash/sha1.h"
+@@ -35,10 +36,14 @@ double SHA1EntropyProvider::GetEntropyForTrial(
+   // it has been observed that this method does not result in a uniform
+   // distribution given the same |trial_name|. When using such a low entropy
+   // source, NormalizedMurmurHashEntropyProvider should be used instead.
++  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
++  const std::string seed_entropy =
++      ant_cfg.is_loaded() ? base::NumberToString(ant_cfg.seed())
++                          : entropy_source_;
+   std::string input = base::StrCat(
+-      {entropy_source_, randomization_seed == 0
+-                            ? trial_name
+-                            : base::NumberToString(randomization_seed)});
++      {seed_entropy, randomization_seed == 0
++                         ? trial_name
++                         : base::NumberToString(randomization_seed)});
+ 
+   base::SHA1Digest sha1_hash = base::SHA1Hash(base::as_byte_span(input));
+   uint64_t bits = base::U64FromLittleEndian(base::span(sha1_hash).first<8u>());
+diff --git a/components/variations/net/variations_http_headers.cc b/components/variations/net/variations_http_headers.cc
+index 5d35d51..f7ed1b7 100644
+--- a/components/variations/net/variations_http_headers.cc
++++ b/components/variations/net/variations_http_headers.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <utility>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/functional/bind.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -124,6 +125,9 @@ URLValidationResult GetUrlValidationResult(const GURL& url) {
+ // rather than `headers`, to be exempted from CORS checks, and to avoid exposing
+ // the header to service workers.
+ bool ShouldAppendVariationsHeader(const GURL& url, InIncognito incognito) {
++  if (ant_chromium::AntShmConfig::Get().is_loaded()) {
++    return false;
++  }
+   // Note the criteria for attaching client experiment headers:
+   // 1. We only transmit to Google owned domains which can evaluate
+   // experiments.
+diff --git a/components/variations/service/variations_service.cc b/components/variations/service/variations_service.cc
+index c4710d8..27fc031 100644
+--- a/components/variations/service/variations_service.cc
++++ b/components/variations/service/variations_service.cc
+@@ -13,6 +13,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/ant_chromium/ant_shm_config.h"
+ #include "base/base64.h"
+ #include "base/command_line.h"
+ #include "base/debug/crash_logging.h"
+@@ -620,6 +621,10 @@ void VariationsService::EnableFetchForTesting() {
+ }
+ 
+ void VariationsService::DoActualFetch() {
++  if (ant_chromium::AntShmConfig::Get().is_loaded()) {
++    // PriumVariationsFreeze: prevent unauthenticated Finch seed fetch.
++    return;
++  }
+   DoFetchFromURL(variations_server_url_, false);
+ }
+ 
+diff --git a/services/network/url_loader.cc b/services/network/url_loader.cc
+index 996ba09..5a14ec3 100644
+--- a/services/network/url_loader.cc
++++ b/services/network/url_loader.cc
+@@ -14,6 +14,7 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "base/ant_chromium/prium_net_guard.h"
+ #include "base/byte_size.h"
+ #include "base/command_line.h"
+ #include "base/containers/fixed_flat_set.h"
+@@ -753,6 +754,21 @@ void URLLoader::ProcessOutboundSharedStorageInterceptor() {
+ void URLLoader::ScheduleStart() {
+   TRACE_EVENT("loading", "URLLoader::ScheduleStart",
+               net::NetLogWithSourceToFlow(url_request_->net_log()));
++  const bool has_web_initiator =
++      (resource_destination_ != network::mojom::RequestDestination::kEmpty) ||
++      (url_request_->initiator().has_value() &&
++       (url_request_->initiator()->scheme() == "http" ||
++        url_request_->initiator()->scheme() == "https"));
++  if (ant_chromium::PriumNetGuard::ShouldSinkholeInternalRequest(
++          has_web_initiator,
++          url_request_->traffic_annotation().unique_id_hash_code,
++          url_request_->url().spec())) {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&URLLoader::NotifyCompleted,
++                                  weak_ptr_factory_.GetWeakPtr(),
++                                  net::ERR_BLOCKED_BY_CLIENT));
++    return;
++  }
+   bool defer = false;
+   if (resource_scheduler_client_) {
+     resource_scheduler_request_handle_ =
