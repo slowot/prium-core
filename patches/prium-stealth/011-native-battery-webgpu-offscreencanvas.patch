@@ -101,16 +101,18 @@ diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_pa
 index 4e4ca8d..39042eb 100644
 --- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
 +++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
-@@ -4,6 +4,8 @@
+@@ -4,6 +4,10 @@
  
  #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
  
++#include <string_view>
++
 +#include "base/ant_chromium/ant_shm_config.h"
 +#include "base/strings/string_util.h"
  #include "services/metrics/public/cpp/ukm_builders.h"
  #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
  #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
-@@ -103,6 +105,28 @@ GPUAdapter::GPUAdapter(
+@@ -103,6 +107,28 @@ GPUAdapter::GPUAdapter(
    }
    description_ = String::FromUtf8(info.device);
    driver_ = String::FromUtf8(info.description);
@@ -129,11 +131,11 @@ index 4e4ca8d..39042eb 100644
 +    } else if (lower_vendor.find("apple") != std::string::npos) {
 +      vendor_ = "apple";
 +    } else {
-+      vendor_ = String::FromUTF8(lower_vendor);
++      vendor_ = String::FromUtf8(std::string_view(lower_vendor));
 +    }
 +    if (!ant_cfg.webgl_renderer().empty()) {
-+      description_ = String::FromUTF8(ant_cfg.webgl_renderer());
-+      driver_ = String::FromUTF8(ant_cfg.webgl_renderer());
++      description_ = String::FromUtf8(std::string_view(ant_cfg.webgl_renderer()));
++      driver_ = String::FromUtf8(std::string_view(ant_cfg.webgl_renderer()));
 +    }
 +  }
    if (supportsPropertiesD3D) {

@@ -35,6 +35,9 @@ FORBIDDEN_PATTERNS = (
     'actions/setup-python@v5',
     'actions/setup-python@v6',
     'actions/upload-artifact@v4',
+    'String::FromUTF8(',
+    'cand.Contains(',
+    'resource_destination_',
 )
 
 

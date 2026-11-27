@@ -125,7 +125,10 @@ def _extract_tar_with_7z_pipe(sevenz: str, archive_path: Path, staging_dir: Path
     assert proc1.stdout is not None
     proc1.stdout.close()
     _, err2 = proc2.communicate()
-    _, err1 = proc1.communicate()
+    err1 = proc1.stderr.read() if proc1.stderr is not None else b''
+    if proc1.stderr is not None:
+        proc1.stderr.close()
+    proc1.wait()
     if proc1.returncode != 0 or proc2.returncode != 0:
         raise RuntimeError(
             f'7z tar pipe failed for {archive_path.name}: '

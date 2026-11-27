@@ -33,29 +33,30 @@ diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/bl
 index 583f05f..89cb90f 100644
 --- a/third_party/blink/renderer/core/frame/navigator.cc
 +++ b/third_party/blink/renderer/core/frame/navigator.cc
-@@ -21,6 +21,9 @@
+@@ -21,6 +21,10 @@
   *  MA 02110-1301, USA
   */
  
 +#include <algorithm>
++#include <string_view>
 +
 +#include "base/ant_chromium/ant_shm_config.h"
  #include "third_party/blink/renderer/core/frame/navigator.h"
  
  #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
-@@ -61,6 +64,11 @@ String Navigator::platform() const {
+@@ -61,6 +65,11 @@ String Navigator::platform() const {
    // mobile and desktop when ReduceUserAgent is enabled.
    if (!DomWindow())
      return NavigatorBase::platform();
 +  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
 +  if (ant_cfg.is_loaded() && !ant_cfg.platform().empty()) {
 +    (void)std::min<uint32_t>(ant_cfg.device_memory(), 8u);
-+    return String::FromUTF8(ant_cfg.platform());
++    return String::FromUtf8(std::string_view(ant_cfg.platform()));
 +  }
    const String& platform_override =
        DomWindow()->GetFrame()->GetSettings()->GetNavigatorPlatformOverride();
    return platform_override.empty() ? NavigatorBase::platform()
-@@ -98,6 +106,10 @@ bool Navigator::cookieEnabled() const {
+@@ -98,6 +107,10 @@ bool Navigator::cookieEnabled() const {
  }
  
  bool Navigator::webdriver() const {
@@ -84,9 +85,9 @@ index 73ad371..d1c685a 100644
    if (GetExecutionContext()) {
 +    const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
 +    if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_CLIENT_HINTS)) {
-+      DEFINE_STATIC_LOCAL(const String, kMacPlatform, ("macOS"));
-+      DEFINE_STATIC_LOCAL(const String, kLinuxPlatform, ("Linux"));
-+      DEFINE_STATIC_LOCAL(const String, kWinPlatform, ("Windows"));
++      DEFINE_THREAD_SAFE_STATIC_LOCAL(const String, kMacPlatform, ("macOS"));
++      DEFINE_THREAD_SAFE_STATIC_LOCAL(const String, kLinuxPlatform, ("Linux"));
++      DEFINE_THREAD_SAFE_STATIC_LOCAL(const String, kWinPlatform, ("Windows"));
 +      const std::string& plat = ant_cfg.platform();
 +      if (plat.find("Mac") != std::string::npos) {
 +        return kMacPlatform;
@@ -118,7 +119,7 @@ index 64b93ab..9679860 100644
 +  const auto& ant_cfg = ant_chromium::AntShmConfig::Get();
 +  if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBRTC_STEALTH)) {
 +    const String cand = platform_candidate->Candidate();
-+    if (cand.Contains(" typ host ") && !cand.Contains(".local")) {
++    if (cand.contains(" typ host ") && !cand.contains(".local")) {
 +      // Scrub non-mDNS local host ICE candidate to prevent LAN IP leak.
 +      return;
 +    }

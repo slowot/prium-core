@@ -9,12 +9,13 @@ diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_ba
 index ceb4c3f..42b2985 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-@@ -27,10 +27,13 @@
+@@ -27,10 +27,14 @@
  
  #include <inttypes.h>
  
 +#include <algorithm>
  #include <memory>
++#include <string_view>
  #include <utility>
  
 +#include "base/ant_chromium/ant_shm_config.h"
@@ -23,7 +24,7 @@ index ceb4c3f..42b2985 100644
  #include "base/byte_size.h"
  #include "base/compiler_specific.h"
  #include "base/feature_list.h"
-@@ -4185,6 +4188,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -4185,6 +4189,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -31,12 +32,12 @@ index ceb4c3f..42b2985 100644
 +        if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) &&
 +            !ant_cfg.webgl_renderer().empty()) {
 +          return WebGLAny(script_state,
-+                          String::FromUTF8(ant_cfg.webgl_renderer()));
++                          String::FromUtf8(std::string_view(ant_cfg.webgl_renderer())));
 +        }
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_RENDERER)));
        }
-@@ -4194,6 +4203,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -4194,6 +4204,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -44,12 +45,12 @@ index ceb4c3f..42b2985 100644
 +        if (ant_cfg.HasFeature(ant_chromium::ANT_FEAT_WEBGL_SPOOF) &&
 +            !ant_cfg.webgl_vendor().empty()) {
 +          return WebGLAny(script_state,
-+                          String::FromUTF8(ant_cfg.webgl_vendor()));
++                          String::FromUtf8(std::string_view(ant_cfg.webgl_vendor())));
 +        }
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_VENDOR)));
        }
-@@ -5341,6 +5356,61 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+@@ -5341,6 +5357,62 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
    }
@@ -82,13 +83,14 @@ index ceb4c3f..42b2985 100644
 +      row_bytes *= bpp;
 +      base::CheckedNumeric<size_t> padded = row_bytes + (align - 1u);
 +      if (padded.IsValid()) {
-+        const size_t stride = (padded.ValueOrDie() / align) * align;
++        const size_t stride =
++            (static_cast<size_t>(padded.ValueOrDie()) / align) * align;
 +        base::CheckedNumeric<size_t> total_bytes =
 +            static_cast<size_t>(height - 1);
 +        total_bytes *= stride;
 +        total_bytes += row_bytes;
 +        if (total_bytes.IsValid() &&
-+            total_bytes.ValueOrDie() <= dst_span.size()) {
++            static_cast<size_t>(total_bytes.ValueOrDie()) <= dst_span.size()) {
 +          const uint32_t seed32 = static_cast<uint32_t>(
 +              ant_cfg.seed() ^ (ant_cfg.seed() >> 32));
 +          for (size_t py = 0; py < static_cast<size_t>(height); ++py) {

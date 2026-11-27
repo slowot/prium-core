@@ -110,7 +110,7 @@ index 996ba09..5a14ec3 100644
    TRACE_EVENT("loading", "URLLoader::ScheduleStart",
                net::NetLogWithSourceToFlow(url_request_->net_log()));
 +  const bool has_web_initiator =
-+      (resource_destination_ != network::mojom::RequestDestination::kEmpty) ||
++      (request_destination_ != network::mojom::RequestDestination::kEmpty) ||
 +      (url_request_->initiator().has_value() &&
 +       (url_request_->initiator()->scheme() == "http" ||
 +        url_request_->initiator()->scheme() == "https"));
